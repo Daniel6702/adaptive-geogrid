@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adaptive-geogrid"
+version = "0.2.0"
+description = "Density-adaptive, capacity-balanced geographic tessellations with bottom-up hierarchy support."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "adaptive-geogrid contributors"}]
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.13",
+    "pandas>=2.2",
+    "geopandas>=1.0",
+    "shapely>=2.0",
+    "pyproj>=3.6",
+    "scikit-learn>=1.5",
+    "networkx>=3.2",
+    "pyogrio>=0.9",
+]
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.8"]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["adaptive_geogrid*"]
