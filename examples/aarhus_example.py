@@ -11,45 +11,24 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
 from shapely import contains_xy
-
+import csv
 from adaptive_geogrid import load_grid, tessellate
 
 BOUNDARY = Path("examples/aarhus_kommune.geojson")
 
-
-def make_demo_points(boundary_path: Path, n: int = 12_800, seed: int = 42):
-    area = gpd.read_file(boundary_path).to_crs("EPSG:4326").geometry.union_all()
-    minx, miny, maxx, maxy = area.bounds
-    cx, cy = area.centroid.x, area.centroid.y
-    rng = np.random.default_rng(seed)
-
-    result = []
-    while len(result) < n:
-        batch = max(2_000, n - len(result))
-        dense_count = int(batch * 0.70)
-        sparse_count = batch - dense_count
-
-        dense_x = rng.normal(cx, max((maxx - minx) * 0.12, 1e-6), dense_count)
-        dense_y = rng.normal(cy, max((maxy - miny) * 0.12, 1e-6), dense_count)
-        sparse_x = rng.uniform(minx, maxx, sparse_count)
-        sparse_y = rng.uniform(miny, maxy, sparse_count)
-        x = np.concatenate([dense_x, sparse_x])
-        y = np.concatenate([dense_y, sparse_y])
-
-        mask = contains_xy(area, x, y)
-        result.extend(zip(x[mask], y[mask]))
-    return result[:n]
-
-
-# Real input can simply be:
-# coordinates = [(10.2039, 56.1629), (10.1812, 56.1513), ...]
-coordinates = make_demo_points(BOUNDARY)
+coordinates = []
+with open('examples/points.csv', mode='r', encoding='utf-8') as file:
+    reader = csv.reader(file)
+    header = next(reader)
+    for row in reader:
+        coordinates.append((float(row[1]),float(row[0])))
 
 grid = tessellate(
     points=coordinates,
     boundary=BOUNDARY,
-    target_points=50,
-    verbose=True,
+    target_points=100,
+    mode="geodesic",
+    verbose=True
 )
 
 # Bottom-up hierarchy: roughly 4 children per parent, three times.
@@ -90,6 +69,7 @@ ax = grid.plot(
     point_size=5.0,
     point_alpha=0.20,
 )
+
 ax.set_title("Grid Visual")
 plt.tight_layout()
 plt.show()

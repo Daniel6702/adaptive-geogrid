@@ -12,4 +12,4 @@ def load_grid(path: str | Path) -> AdaptiveGeoGrid:
 
 
 __all__ = ["AdaptiveGeoGrid", "load_grid", "tessellate"]
-__version__ = "0.2.0"
+__version__ = "0.5.0"

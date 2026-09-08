@@ -186,11 +186,272 @@ def test_plot_hierarchy_uses_overlapping_boundaries_and_points_can_be_sampled(tm
         points=points,
         point_sample=50,
         point_random_state=7,
-        hierarchy_band_width=1.3,
-        hierarchy_separator_width=0.45,
+        hierarchy_lane_width=1.3,
+        hierarchy_lane_gap=0.45,
     )
     output = tmp_path / "banded_grid_with_points.png"
     ax.figure.savefig(output, dpi=140)
     assert output.exists()
     assert output.stat().st_size > 0
 
+
+
+def test_warped_mode_classifies_training_points_consistently():
+    rng = np.random.default_rng(31)
+    points = rng.uniform([10.0, 56.0], [10.2, 56.2], size=(600, 2))
+    boundary = box(9.99, 55.99, 10.21, 56.21)
+
+    grid = tessellate(
+        points=points,
+        boundary=boundary,
+        n_tiles=12,
+        mode="warped",
+        projected_crs="EPSG:32632",
+        random_state=11,
+        lloyd_iterations=2,
+        balance_tolerance=0.15,
+        warp_strength=0.12,
+        warp_octaves=4,
+    )
+
+    assert grid.tessellation_mode == "warped"
+    classified = grid.classify(points)
+    counts = np.bincount(classified, minlength=12)
+    assert np.array_equal(counts, grid.tiles.point_count.to_numpy(dtype=np.int64))
+    assert all(not geom.is_empty for geom in grid.tiles.geometry)
+    assert grid._levels_projected[0].geometry.is_valid.all()
+
+    union = grid._levels_projected[0].geometry.union_all()
+    relative_missing = grid.boundary_projected.difference(union).area / grid.boundary_projected.area
+    relative_extra = union.difference(grid.boundary_projected).area / grid.boundary_projected.area
+    assert relative_missing < 1e-7
+    assert relative_extra < 1e-10
+
+
+def test_warped_mode_save_load_preserves_classification(tmp_path):
+    rng = np.random.default_rng(41)
+    points = rng.uniform([10.0, 56.0], [10.2, 56.2], size=(300, 2))
+    grid = tessellate(
+        points=points,
+        boundary=box(9.99, 55.99, 10.21, 56.21),
+        n_tiles=6,
+        mode="warped",
+        projected_crs="EPSG:32632",
+        random_state=13,
+        lloyd_iterations=2,
+        balance_tolerance=0.20,
+        warp_strength=0.14,
+    )
+    grid.build_hierarchy(branching_factor=3, levels=1)
+    expected = grid.classify(points[:80], include_hierarchy=True)
+
+    path = tmp_path / "warped.aggrid"
+    grid.save(path)
+    loaded = load_grid(path)
+
+    assert loaded.tessellation_mode == "warped"
+    assert np.array_equal(loaded.classify(points[:80], include_hierarchy=True), expected)
+
+
+def test_tessellation_mode_validation():
+    with np.testing.assert_raises_regex(ValueError, "Unsupported tessellation mode"):
+        tessellate(
+            points=[(10.0, 56.0), (10.1, 56.1)],
+            boundary=box(9.9, 55.9, 10.2, 56.2),
+            n_tiles=1,
+            mode="future_magic",
+            projected_crs="EPSG:32632",
+        )
+
+
+def test_geodesic_mode_balances_and_covers_boundary():
+    rng = np.random.default_rng(51)
+    points = rng.uniform([10.0, 56.0], [10.2, 56.2], size=(600, 2))
+    boundary = box(9.99, 55.99, 10.21, 56.21)
+
+    grid = tessellate(
+        points=points,
+        boundary=boundary,
+        n_tiles=12,
+        mode="geodesic",
+        projected_crs="EPSG:32632",
+        random_state=17,
+        lloyd_iterations=2,
+        balance_tolerance=0.15,
+        geodesic_strength=0.35,
+        geodesic_octaves=4,
+        geodesic_grid_size=120,
+        geodesic_simplify=1.0,
+    )
+
+    assert grid.tessellation_mode == "geodesic"
+    assert grid._geodesic_metric is not None
+    assert grid._geodesic_metric.labels.shape == grid._geodesic_metric.shape
+    assert np.nanmin(grid._geodesic_metric.cost) > 0
+
+    classified = grid.classify(points)
+    counts = np.bincount(classified, minlength=12)
+    assert np.array_equal(counts, grid.tiles.point_count.to_numpy(dtype=np.int64))
+    assert np.max(np.abs(counts - 50)) <= 10
+
+    assert all(not geom.is_empty for geom in grid.tiles.geometry)
+    assert grid._levels_projected[0].geometry.is_valid.all()
+    union = grid._levels_projected[0].geometry.union_all()
+    relative_missing = grid.boundary_projected.difference(union).area / grid.boundary_projected.area
+    relative_extra = union.difference(grid.boundary_projected).area / grid.boundary_projected.area
+    assert relative_missing < 1e-7
+    assert relative_extra < 1e-7
+
+
+def test_geodesic_mode_hierarchy_and_save_load(tmp_path):
+    rng = np.random.default_rng(61)
+    points = rng.uniform([10.0, 56.0], [10.2, 56.2], size=(360, 2))
+    grid = tessellate(
+        points=points,
+        boundary=box(9.99, 55.99, 10.21, 56.21),
+        n_tiles=8,
+        mode="geodesic",
+        projected_crs="EPSG:32632",
+        random_state=19,
+        lloyd_iterations=2,
+        balance_tolerance=0.20,
+        geodesic_strength=0.30,
+        geodesic_grid_size=100,
+    )
+    grid.build_hierarchy(branching_factor=2, levels=2)
+    expected = grid.classify(points[:80], include_hierarchy=True)
+
+    path = tmp_path / "geodesic.aggrid"
+    grid.save(path)
+    loaded = load_grid(path)
+
+    assert loaded.tessellation_mode == "geodesic"
+    assert loaded._geodesic_metric is not None
+    assert loaded._geodesic_metric.shape == grid._geodesic_metric.shape
+    assert np.array_equal(loaded._geodesic_metric.labels, grid._geodesic_metric.labels)
+    assert np.array_equal(loaded.classify(points[:80], include_hierarchy=True), expected)
+
+
+def test_geodesic_zero_strength_is_positive_uniform_metric():
+    rng = np.random.default_rng(71)
+    points = rng.uniform([10.0, 56.0], [10.1, 56.1], size=(180, 2))
+    grid = tessellate(
+        points=points,
+        boundary=box(9.99, 55.99, 10.11, 56.11),
+        n_tiles=4,
+        mode="geodesic",
+        projected_crs="EPSG:32632",
+        random_state=3,
+        lloyd_iterations=1,
+        balance_tolerance=0.25,
+        geodesic_strength=0.0,
+        geodesic_grid_size=80,
+        geodesic_simplify=0.0,
+    )
+    valid_cost = grid._geodesic_metric.cost[grid._geodesic_metric.valid_mask]
+    assert np.allclose(valid_cost, 1.0)
+
+
+def test_graph_mode_balances_covers_and_classifies_consistently():
+    rng = np.random.default_rng(81)
+    points = rng.uniform([10.0, 56.0], [10.2, 56.2], size=(600, 2))
+    boundary = box(9.99, 55.99, 10.21, 56.21)
+
+    grid = tessellate(
+        points=points,
+        boundary=boundary,
+        n_tiles=12,
+        mode="graph",
+        projected_crs="EPSG:32632",
+        random_state=23,
+        lloyd_iterations=2,
+        balance_tolerance=0.15,
+        graph_compactness=1.0,
+        graph_boundary_weight=0.35,
+        graph_organic_strength=0.20,
+        graph_refine_iterations=5,
+        graph_simplify=0.0,
+    )
+
+    assert grid.tessellation_mode == "graph"
+    assert grid._graph_state is not None
+    classified = grid.classify(points)
+    counts = np.bincount(classified, minlength=12)
+    assert np.array_equal(counts, grid.tiles.point_count.to_numpy(dtype=np.int64))
+    assert np.max(np.abs(counts - 50)) <= 10
+
+    assert all(not geom.is_empty for geom in grid.tiles.geometry)
+    assert grid._levels_projected[0].geometry.is_valid.all()
+    union = grid._levels_projected[0].geometry.union_all()
+    relative_missing = grid.boundary_projected.difference(union).area / grid.boundary_projected.area
+    relative_extra = union.difference(grid.boundary_projected).area / grid.boundary_projected.area
+    assert relative_missing < 1e-9
+    assert relative_extra < 1e-9
+
+
+def test_graph_mode_hierarchy_and_save_load(tmp_path):
+    rng = np.random.default_rng(91)
+    points = rng.uniform([10.0, 56.0], [10.2, 56.2], size=(360, 2))
+    grid = tessellate(
+        points=points,
+        boundary=box(9.99, 55.99, 10.21, 56.21),
+        n_tiles=8,
+        mode="graph",
+        projected_crs="EPSG:32632",
+        random_state=29,
+        lloyd_iterations=2,
+        balance_tolerance=0.20,
+        graph_refine_iterations=4,
+    )
+    grid.build_hierarchy(branching_factor=2, levels=2)
+    expected = grid.classify(points[:80], include_hierarchy=True)
+
+    path = tmp_path / "graph.aggrid"
+    grid.save(path)
+    loaded = load_grid(path)
+
+    assert loaded.tessellation_mode == "graph"
+    assert loaded._graph_state is not None
+    assert np.array_equal(
+        loaded._graph_state.generator_labels,
+        grid._graph_state.generator_labels,
+    )
+    assert np.allclose(
+        loaded._graph_state.generator_points,
+        grid._graph_state.generator_points,
+    )
+    assert np.array_equal(loaded.classify(points[:80], include_hierarchy=True), expected)
+
+
+def test_geodesic_disconnected_components_need_no_euclidean_fallback_warning():
+    import warnings
+    from shapely.geometry import MultiPolygon
+
+    boundary = MultiPolygon([
+        box(10.00, 56.00, 10.04, 56.04),
+        box(10.08, 56.00, 10.12, 56.04),
+        box(10.16, 56.00, 10.20, 56.04),
+    ])
+    rng = np.random.default_rng(111)
+    chunks = []
+    for minx in (10.00, 10.08, 10.16):
+        chunks.append(rng.uniform([minx + 0.002, 56.002], [minx + 0.038, 56.038], size=(80, 2)))
+    points = np.vstack(chunks)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        grid = tessellate(
+            points=points,
+            boundary=boundary,
+            n_tiles=2,
+            mode="geodesic",
+            projected_crs="EPSG:32632",
+            random_state=31,
+            lloyd_iterations=1,
+            balance_tolerance=0.30,
+            geodesic_grid_size=120,
+            geodesic_simplify=0.0,
+        )
+
+    assert not any("contain no site" in str(item.message) for item in caught)
+    assert np.all(grid.classify(points) >= 0)

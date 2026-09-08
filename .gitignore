@@ -6,6 +6,11 @@ __pycache__/
 # C extensions
 *.so
 
+aarhus_grid.aggrid
+aarhus_all_levels.geojson
+
+.omo
+
 # Distribution / packaging
 .Python
 build/
